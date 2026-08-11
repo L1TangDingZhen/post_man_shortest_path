@@ -124,6 +124,13 @@ python solve_route.py --data data --out result --open
 # Note the equals sign -- southern latitudes are negative:
 python solve_route.py --data data --out result --start=-37.8406,144.9541
 
+# Fixed start AND end (e.g. depot -> round -> parcel-handover office):
+# jointly optimised open route via a zero-length virtual required edge.
+# Both points snap to the full network, so they may sit on service-0
+# corridor streets. --end alone pins just the finish.
+python solve_route.py --data data --out result \
+    --start=-37.8406,144.9541 --end=-37.8380,144.9520
+
 # Use an exact hand-drawn boundary instead of place names:
 # draw a polygon at https://geojson.io, save it, then
 python extract_network.py --polygon round.geojson --out data
@@ -137,6 +144,29 @@ python split_edge.py --data data --at=-37.8450,144.9505
 # footpaths; includes paths and laneways that make good shortcuts):
 python extract_network.py --place ... --network-type bike --out data
 ```
+
+## Re-extracting without losing your annotation
+
+Re-running the extraction regenerates `edges.csv` and would wipe every
+`service` edit and split. When you need a bigger area (say, to bring a
+depot or a handover office into the network), snapshot first:
+
+```bash
+# 1. freeze the current annotation into the gitignored round dir
+python prepare_round.py --data data --round round.local --export
+
+# 2. enlarge your polygon (geojson.io), then re-extract; default 0
+#    makes the newly added streets arrive as connectors, not service
+python extract_network.py --polygon round.local/my_round.geojson \
+    --default-service 0 --out data
+
+# 3. replay splits + service values onto the fresh extraction
+python prepare_round.py --data data --round round.local
+```
+
+Edges that are new to the enlarged area keep the extraction default
+and are reported — review them in the editor. Stale overrides (ids
+that no longer exist) are warned about, never silently dropped.
 
 ## Reading the result
 
@@ -163,6 +193,7 @@ bundled in row order; a `2/2` pass is the same street's other side.
 python test_solve.py
 python test_editor.py
 python test_split.py
+python test_prepare.py
 ```
 
 Runs the solver on a synthetic street grid (no internet needed) and

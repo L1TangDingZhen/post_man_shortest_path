@@ -15,7 +15,8 @@ project evolves — especially the decision log.
 | Graphical service editor (`make_editor.py`, lean cut of B5) | **done, tested** (`test_editor.py`) |
 | Excluded edges (`service=x`) across solver + editor | **done, tested** |
 | SPEC-1 edge-split utility (`split_edge.py`, mid-block boundaries) | **done, tested** (`test_split.py`) — **V1 complete** |
-| V2: fixed endpoints (`--end`, depot + final leg to office) | **next task** — spec'd (SPEC-2) |
+| V2 / SPEC-2: fixed endpoints (`--start` + `--end`, depot → round → handover office) | **done, tested** (in `test_solve.py`) |
+| B1: reproducible rounds (`prepare_round.py` export/apply) | **done, tested** (`test_prepare.py`) — **V2 complete** |
 | V3+: time-based costs, pass pairing, GPX compare, editor UI | backlog |
 
 ---
@@ -249,7 +250,7 @@ synthetic grid from `test_solve.py`):
 4. Mis-click guard: a point 100 m from any edge exits non-zero.
 5. Split of a child (`#a`) works.
 
-## 6. SPEC-2 — fixed endpoints and the final office leg (V2)
+## 6. SPEC-2 — fixed endpoints and the final office leg (shipped 2026-08)
 
 **Goal.** Support routes that must start at point A and end at point B
 (e.g. finish the round at a retail office), jointly optimised.
@@ -291,14 +292,31 @@ Recommendation: B is an acceptable first cut; A is the proper solution
 once merge tooling exists. The depot → round-start leg is the mirror
 image and uses whichever mechanism B/A settles on.
 
+**As shipped (2026-08).** `--start`+`--end` implements the virtual-edge
+reduction: both points snap to F, the zero-length required edge joins R
+before connectivity repair, and `traverse()` materialises the circuit,
+rotates it around the virtual edge and orients the walk to begin at
+the start pin. `--end` alone reuses the open-path machinery with the
+pin on the finish side (orientation post-fix; if parity forces both
+endpoints, the forced endpoint nearest `--end` is chosen and reported).
+Endpoint pinning also fixed a latent bug: the open-mode pin previously
+picked an arbitrary odd node when the snapped pin was not itself odd —
+it now minimises true network distance over F. The office-outside-the-
+area question was resolved as **Option A enabled by B1**: enlarge the
+polygon, re-extract with `--default-service 0`, replay the annotation
+with `prepare_round.py`, and pin `--start`/`--end`; endpoints off the
+service component are joined by the auto-bridge (near-optimal warning
+stands, honestly). Option B was not needed.
+
 ## 7. Backlog (V1.1 / V3+)
 
-- **B1 Declarative round config (V1.1).** A gitignored `round.local/`
-  holding `service_overrides.csv` (edge_id → service) and `splits.csv`
-  (the split points), applied by a `prepare_round.py` step:
-  `extract → prepare → solve`. Makes a round fully reproducible after
-  re-extraction (fixes E8) and keeps *all* private state in two small
-  declarative files.
+- **B1 Declarative round config.** *Shipped 2026-08* as
+  `prepare_round.py`: `--export` snapshots the complete annotation
+  (`service_overrides.csv` covers every edge; `splits.csv` is
+  reconstructed from the split notes, parents before children) and the
+  default mode replays splits (via `split_edge.py`) then overrides
+  onto a fresh extraction, with backups and stale/new-edge reporting.
+  Fixes E8; workflow: `extract --default-service 0 → prepare → solve`.
 - **B2 Time-based costs (V3).** Replace distance with estimated time:
   per-highway-type speeds, fixed penalties for crossing signalised
   intersections / arterials. Structure is ready (NF3); true turn-aware
@@ -354,3 +372,5 @@ is the only networked step — keep it thin, and keep everything after
 | 2026-08 | Island view inside the editor (client-side union-find over service>0 edges, one colour per island, size list with zoom-to buttons, live while editing) | A text report of island street names was useless for locating unnamed footway fragments; colouring them on the map with a "go" button makes strays obvious and fixable in place |
 | 2026-08 | `service` gained `x`: the edge is dropped from F at load — never required, never deadhead. Editor: shift-click toggle + bulk-x; steps guidance now `x` (E6) | `0` keeps an edge routable, and a real route deadheaded through a connector the rider considers unusable. A fourth value closes the gap; absence of `x` ≡ old behaviour, so no migration (B7) |
 | 2026-08 | SPEC-1 shipped as `split_edge.py`, using a local equirectangular metre frame + haversine instead of the spec's `shapely.ops.substring` | Projecting in raw lon/lat degrees skews distances by cos(lat); the local frame is exact for the ≤30 m decisions involved, keeps the splitter stdlib-only, and child lengths come from haversine chains as specified. **V1 complete** |
+| 2026-08 | B1 shipped: overrides snapshot every edge (not just deviations); splits.csv is reconstructed from child `note`s and replayed through `split_edge.py` as a subprocess; recommended re-extraction default is `--default-service 0` | A full snapshot restores the round regardless of the extraction default and makes "new streets = whatever the default was" explicit; note-reconstruction means users never maintain splits.csv by hand; subprocess replay keeps the tools decoupled |
+| 2026-08 | SPEC-2 shipped: `--start`+`--end` via the zero-length virtual required edge; `--end` alone via the pinned open path; endpoints snapped to F; depot/office outside the old area handled by Option A (enlarge polygon + `--default-service 0` + B1 replay), Option B dropped | The virtual-edge reduction reuses the entire pipeline and keeps exactness when endpoints touch the service component; off-component endpoints ride the existing auto-bridge with its honest warning. B1 removed Option A's blocker, so the strictly better variant won |

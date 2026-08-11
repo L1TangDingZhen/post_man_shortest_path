@@ -12,6 +12,9 @@ circuit and open modes, and asserts the core invariants:
   * route length >= mandatory lower bound
   * a disconnected service set gets auto-bridged and still yields a walk
   * a service=x edge is excluded: the route never touches it
+  * SPEC-2: --start + --end yields an open walk from the snapped start
+    to the snapped end; --end alone pins the finish; --end + --open is
+    rejected
 
 Run:  python test_solve.py
 """
@@ -198,6 +201,30 @@ def main():
         "route used an excluded (service=x) edge"
     spec3.pop(banned)
     check_walk(rows5, edges_by_id, spec3, closed=True)
+
+    print("== pinned start + end (SPEC-2) ==")
+    out6 = TMP / "pinned"
+    run(data, out6, "--start=-37.845,144.950", "--end=-37.8471,144.9529")
+    rows6 = read_route(out6)
+    end6, first6 = check_walk(rows6, edges_by_id, spec, closed=False)
+    assert first6 == "n00", f"route should start at n00, got {first6}"
+    assert end6 == "n23", f"route should end at n23, got {end6}"
+    assert total_km(rows6) * 1000 >= bound - 1
+
+    print("== pinned end only ==")
+    out7 = TMP / "endonly"
+    run(data, out7, "--end=-37.8471,144.9529")
+    rows7 = read_route(out7)
+    end7, _ = check_walk(rows7, edges_by_id, spec, closed=False)
+    assert end7 == "n23", f"route should end at n23, got {end7}"
+
+    print("== --end with --open rejected ==")
+    res = subprocess.run(
+        [sys.executable, str(BASE / "solve_route.py"),
+         "--data", str(data), "--out", str(TMP / "reject"),
+         "--open", "--end=-37.8471,144.9529"],
+        capture_output=True, text=True)
+    assert res.returncode != 0, "--end plus --open must be rejected"
 
     print(f"""
 ALL TESTS PASSED

@@ -45,6 +45,18 @@ Usage:
     python solve_route.py --data data --out result
     python solve_route.py --data data --out result --open
     python solve_route.py --data data --out result --start=-37.8406,144.9541
+    python solve_route.py --data data --out result \
+        --start=-37.8406,144.9541 --end=-37.8380,144.9520
+
+--start + --end (SPEC-2): a zero-length virtual REQUIRED edge
+end -> start is added, the ordinary closed circuit is solved, then the
+circuit is rotated so the virtual edge is last and dropped -- what
+remains is the jointly optimal open route start -> ... -> end.  The
+endpoints are snapped to the full network F, so they may lie on
+non-service streets (e.g. a depot or a parcel-handover office reached
+via service-0 corridor streets); if they sit off the service
+component, the auto-bridge connects them and the near-optimal warning
+applies as usual.
 """
 
 import argparse
@@ -218,15 +230,19 @@ def parity_repair(F, R, open_route, start_node):
         return None, cost
 
     # Open route: leave the best pair of odd nodes unmatched -- they
-    # become the start and end. If --start was given, pin one endpoint
-    # to the odd node nearest to it.
+    # become the start and end. If a pin was given, fix one endpoint
+    # to the odd node nearest to it (network distance over F).
     if len(odd) == 2:
         return tuple(odd), 0.0
     candidates = []
     if start_node is not None:
-        s_fixed = min(odd, key=lambda n: dist.get((start_node, n), 0)
-                      if n != start_node else 0) \
-            if start_node not in odd else start_node
+        if start_node in odd:
+            s_fixed = start_node
+        else:
+            d, _ = nx.single_source_dijkstra(F, start_node,
+                                             weight="length")
+            s_fixed = min((n for n in odd if n in d),
+                          key=lambda n: d[n], default=odd[0])
         pairs_to_try = [(s_fixed, t) for t in odd if t != s_fixed]
     else:
         pairs_to_try = list(itertools.combinations(odd, 2))
@@ -243,17 +259,33 @@ def parity_repair(F, R, open_route, start_node):
 # Phase 3 + 4 -- Euler traversal and expansion
 # ----------------------------------------------------------------------
 
-def traverse(F, R, nodes, endpoints, start_node):
+VIRTUAL_KEY = "virtual|endpin"
+
+
+def traverse(F, R, nodes, endpoints, start_node, pin_start=None):
     """Walk the Euler circuit/path and expand connectors into real
-    street segments. Returns a list of segment dicts."""
+    street segments. Returns a list of segment dicts.
+
+    pin_start: set when a virtual end->start edge is in R (SPEC-2).
+    The circuit is rotated so the virtual edge would be last, the edge
+    is dropped, and the walk is oriented to begin at pin_start -- what
+    remains is the open route start -> ... -> end."""
     if endpoints:
         source = endpoints[0]
         assert nx.has_eulerian_path(R, source=source)
-        euler = nx.eulerian_path(R, source=source, keys=True)
+        euler = list(nx.eulerian_path(R, source=source, keys=True))
     else:
         source = start_node if (start_node in R) else None
         assert nx.is_eulerian(R)
-        euler = nx.eulerian_circuit(R, source=source, keys=True)
+        euler = list(nx.eulerian_circuit(R, source=source, keys=True))
+
+    if pin_start is not None:
+        i = next(idx for idx, (u, v, k) in enumerate(euler)
+                 if k == VIRTUAL_KEY)
+        walk = euler[i + 1:] + euler[:i]
+        if walk and walk[0][0] != pin_start:   # circuit hit the virtual
+            walk = [(v, u, k) for u, v, k in reversed(walk)]  # edge the
+        euler = walk                           # other way round: flip
 
     segments = []
     passes_seen = defaultdict(int)
@@ -586,7 +618,19 @@ def main():
                          "service-street node. Southern-hemisphere "
                          "latitudes are negative, so use the equals "
                          "form: --start=-37.8406,144.9541")
+    ap.add_argument("--end", metavar="LAT,LON",
+                    help="pin the finish point (e.g. a parcel-handover "
+                         "office). With --start: jointly optimal open "
+                         "route start -> ... -> end, both snapped to "
+                         "the full network (they may lie on service-0 "
+                         "streets). Without --start: open route whose "
+                         "end is pinned, start chosen optimally. "
+                         "Mutually exclusive with --open. Equals form "
+                         "for southern latitudes: --end=-37.84,144.95")
     args = ap.parse_args()
+    if args.end and args.open:
+        ap.error("--end is mutually exclusive with --open "
+                 "(an --end route is already open)")
 
     data_dir, out_dir = Path(args.data), Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -602,27 +646,56 @@ def main():
     print(f"  {len(edges)} edges total | {n_service_edges} service streets "
           f"| mandatory riding: {service_len / 1000:.2f} km")
 
+    pin_start = pin_end = None
+    if args.end and args.start:
+        # SPEC-2: zero-length virtual required edge end -> start; the
+        # Euler circuit is later rotated around it (see traverse).
+        pin_end = snap_to_node(args.end, list(F.nodes), nodes)
+        pin_start = snap_to_node(args.start, list(F.nodes), nodes)
+        print(f"  start snapped to node {pin_start} at {nodes[pin_start]}")
+        print(f"  end snapped to node {pin_end} at {nodes[pin_end]}")
+        R.add_edge(pin_end, pin_start, key=VIRTUAL_KEY, length=0.0)
+
     ensure_required_connected(F, R)
 
     start_node = None
-    if args.start:
+    if args.start and pin_start is None:
         start_node = snap_to_node(args.start, list(R.nodes), nodes)
         print(f"  start snapped to node {start_node} "
               f"at {nodes[start_node]}")
+    if args.end and pin_end is None:
+        pin_end = snap_to_node(args.end, list(R.nodes), nodes)
+        print(f"  end snapped to node {pin_end} at {nodes[pin_end]}")
 
     n_odd = len(odd_nodes(R))
     print(f"Parity repair: {n_odd} odd-degree nodes to match ...")
-    endpoints, extra = parity_repair(F, R, args.open, start_node)
-
     print("Extracting Euler traversal ...")
-    segments = traverse(F, R, nodes, endpoints, start_node)
+    if pin_start is not None:                        # --start + --end
+        endpoints, extra = parity_repair(F, R, False, None)
+        segments = traverse(F, R, nodes, None, None, pin_start=pin_start)
+        kind = "open path, start & end pinned"
+    elif pin_end is not None:                        # --end only
+        endpoints, extra = parity_repair(F, R, True, pin_end)
+        if endpoints:
+            # orient the walk so it ENDS at the pin (or, if parity
+            # forces both endpoints, at the forced endpoint nearest it)
+            e_pin = snap_to_node(args.end, list(endpoints), nodes)
+            endpoints = tuple(n for n in endpoints if n != e_pin) \
+                + (e_pin,)
+            segments = traverse(F, R, nodes, endpoints, None)
+            kind = "open path, end pinned"
+        else:  # no odd nodes: the route is a circuit; close it there
+            segments = traverse(F, R, nodes, None, pin_end)
+            kind = "closed circuit (starts and ends at --end)"
+    else:
+        endpoints, extra = parity_repair(F, R, args.open, start_node)
+        segments = traverse(F, R, nodes, endpoints, start_node)
+        kind = "open path" if endpoints else "closed circuit"
 
     total = sum(s["length"] for s in segments)
     deadhead = total - service_len
     route_csv = write_route_csv(segments, F, nodes, out_dir)
     route_map = write_map(segments, nodes, out_dir)
-
-    kind = "open path" if endpoints else "closed circuit"
     print(f"""
 ================ RESULT ({kind}) ================
 Mandatory service riding : {service_len / 1000:7.2f} km   (theoretical lower bound)
