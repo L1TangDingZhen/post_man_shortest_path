@@ -1,0 +1,33 @@
+# ---- private round data: NEVER commit ----------------------------
+# Your edited edges.csv IS your round definition. Everything the
+# pipeline reads or writes about a real round stays local.
+data/
+result/
+round.local/
+# osmnx Overpass cache -- raw OSM data of the round
+cache/
+*.geojson
+*.gpx
+splits.csv
+service_overrides.csv
+CLAUDE.md
+
+# ---- python -------------------------------------------------------
+.venv/
+venv/
+map/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# ---- test artefacts ----------------------------------------------
+_test_tmp/
+_test_extract/
+
+# ---- editors / OS -------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+
+# ---- claude code local state -------------------------------------
+.claude/settings.local.json
