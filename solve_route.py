@@ -181,9 +181,12 @@ def ensure_required_connected(F, R, pinned_endpoints=False):
               f"{bridges} bridge(s) totalling {bridge_len / 1000:.2f} km."
               f"\n           Bridging is a minimum spanning tree over the "
               f"components, so the route is near-optimal: only that "
-              f"{bridge_len / 1000:.2f} km is not provably minimal. "
-              f"Merge the islands (editor: show islands) for an exact "
-              f"result.")
+              f"{bridge_len / 1000:.2f} km is not provably minimal."
+              f"\n           Separate delivery areas are fine -- that "
+              f"bridge is riding you would do anyway. Only fix islands "
+              f"caused by annotation gaps (a short service=0 sliver "
+              f"inside a street you do deliver); never mark a street "
+              f"you do not deliver just to merge islands.")
 
 
 # ----------------------------------------------------------------------
