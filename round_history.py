@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""Version history for solved rounds.
+
+Every solve can be filed away with the annotation that produced it, so
+you can see how the round evolved: which streets you added or dropped,
+and what that did to the distance.
+
+    python solve_route.py --data data --out result --history
+        ... solve as usual and record a version (default location:
+        round.local/history)
+
+    python round_history.py list
+    python round_history.py show <id>
+    python round_history.py diff <old> <new>
+        <id> may be a prefix of a version id, or a negative index:
+        -1 is the newest version, -2 the one before it.  `diff` with no
+        arguments compares the two newest versions.
+
+Layout (inside the gitignored round directory):
+
+    history/index.csv          one row per version, for quick listing
+    history/<id>/summary.json  totals, endpoints, mode, counts
+    history/<id>/service.csv   the round definition at that moment
+                               (every edge with service 1/2/x)
+    history/<id>/route.csv     the emitted route
+    history/<id>/route_map.html   the map, openable months later
+
+A version is only filed when something actually differs from the newest
+one -- pressing Solve twice on an unchanged round does not pile up
+duplicates.
+"""
+
+import argparse
+import csv
+import hashlib
+import json
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+
+DEFAULT_HISTORY = "round.local/history"
+INDEX = "index.csv"
+FIELDS = ["id", "timestamp", "note", "mode", "service_edges",
+          "mandatory_km", "total_km", "deadhead_km", "islands",
+          "bridge_km", "annotation"]
+
+
+# ----------------------------------------------------------------------
+# reading / writing
+# ----------------------------------------------------------------------
+
+def read_annotation(data_dir: Path):
+    """The round definition: every edge that is not a plain connector.
+    Returns (rows, short hash of the whole annotation)."""
+    rows = []
+    with open(data_dir / "edges.csv", newline="",
+              encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            service = (r.get("service") or "").strip().lower()
+            if service in ("1", "2", "x"):
+                rows.append({"edge_id": r["edge_id"], "service": service,
+                             "name": r.get("name") or "",
+                             "length_m": r.get("length_m") or "0"})
+    rows.sort(key=lambda r: r["edge_id"])
+    blob = "\n".join(f'{r["edge_id"]}={r["service"]}' for r in rows)
+    return rows, hashlib.sha1(blob.encode()).hexdigest()[:8]
+
+
+def read_index(history_dir: Path):
+    path = history_dir / INDEX
+    if not path.exists():
+        return []
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+
+def write_index(history_dir: Path, rows):
+    with open(history_dir / INDEX, "w", newline="",
+              encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+
+
+def read_service(version_dir: Path):
+    with open(version_dir / "service.csv", newline="",
+              encoding="utf-8-sig") as f:
+        return {r["edge_id"]: r for r in csv.DictReader(f)}
+
+
+# ----------------------------------------------------------------------
+# recording
+# ----------------------------------------------------------------------
+
+def record(history_dir: Path, data_dir: Path, summary: dict,
+           out_dir: Path = None, note: str = ""):
+    """File one solved version. Returns (version_id, is_new)."""
+    rows, digest = read_annotation(data_dir)
+    index = read_index(history_dir)
+
+    if index:
+        last = index[-1]
+        if (last["annotation"] == digest
+                and last["mode"] == summary.get("mode", "")
+                and abs(float(last["total_km"]) -
+                        summary.get("total_km", 0)) < 5e-4):
+            return last["id"], False
+
+    # second-resolution ids collide when two solves land in the same
+    # second (small rounds solve in well under a second)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    version_id, n = stamp, 1
+    while (history_dir / version_id).exists():
+        n += 1
+        version_id = f"{stamp}-{n}"
+    version_dir = history_dir / version_id
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(version_dir / "service.csv", "w", newline="",
+              encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=["edge_id", "service", "name",
+                                          "length_m"])
+        w.writeheader()
+        w.writerows(rows)
+
+    full = dict(summary)
+    full.update(id=version_id, note=note, annotation=digest,
+                timestamp=datetime.now().isoformat(timespec="seconds"))
+    (version_dir / "summary.json").write_text(
+        json.dumps(full, indent=1, ensure_ascii=False), encoding="utf-8")
+
+    if out_dir:
+        for name in ("route.csv", "route_map.html"):
+            src = out_dir / name
+            if src.exists():
+                shutil.copy2(src, version_dir / name)
+
+    index.append({k: full.get(k, "") for k in FIELDS})
+    write_index(history_dir, index)
+    return version_id, True
+
+
+# ----------------------------------------------------------------------
+# CLI
+# ----------------------------------------------------------------------
+
+def resolve(index, ref):
+    """Version id from a prefix or a negative index (-1 = newest)."""
+    if not index:
+        sys.exit("no versions recorded yet -- solve with --history first")
+    if ref is None:
+        return index[-1]["id"]
+    if ref.startswith("-") and ref[1:].isdigit():
+        try:
+            return index[int(ref)]["id"]
+        except IndexError:
+            sys.exit(f"only {len(index)} version(s) recorded")
+    # an exact id always wins: collision suffixes ("...-2") make one id
+    # a prefix of another, which would otherwise read as ambiguous
+    if any(r["id"] == ref for r in index):
+        return ref
+    hits = [r["id"] for r in index if r["id"].startswith(ref)]
+    if not hits:
+        sys.exit(f"no version matches {ref!r}")
+    if len(hits) > 1:
+        sys.exit(f"{ref!r} matches {len(hits)} versions: "
+                 f"{', '.join(hits[:5])}")
+    return hits[0]
+
+
+def cmd_list(history_dir: Path, _args):
+    index = read_index(history_dir)
+    if not index:
+        sys.exit("no versions recorded yet -- solve with --history first")
+    print(f"{'id':<16}{'streets':>8}{'service':>9}{'total':>9}"
+          f"{'dead':>8}{'isl':>5}  mode / note")
+    prev = None
+    for r in index:
+        total = float(r["total_km"])
+        delta = "" if prev is None else f"  ({total - prev:+.2f})"
+        prev = total
+        label = r["mode"] + (f" — {r['note']}" if r["note"] else "")
+        print(f"{r['id']:<16}{r['service_edges']:>8}"
+              f"{float(r['mandatory_km']):>8.2f}k{total:>8.2f}k"
+              f"{float(r['deadhead_km']):>7.2f}k{r['islands']:>5}"
+              f"  {label}{delta}")
+    print(f"\n{len(index)} version(s) in {history_dir}")
+
+
+def cmd_show(history_dir: Path, args):
+    index = read_index(history_dir)
+    vid = resolve(index, args.version)
+    vdir = history_dir / vid
+    data = json.loads((vdir / "summary.json").read_text(encoding="utf-8"))
+    for key, value in data.items():
+        print(f"  {key:16s} {value}")
+    for name in ("route.csv", "route_map.html"):
+        if (vdir / name).exists():
+            print(f"  {name:16s} {vdir / name}")
+
+
+def cmd_diff(history_dir: Path, args):
+    index = read_index(history_dir)
+    if args.old is None and args.new is None and len(index) < 2:
+        sys.exit("need at least two versions to diff")
+    old_id = resolve(index, args.old if args.old else "-2")
+    new_id = resolve(index, args.new if args.new else "-1")
+    old, new = read_service(history_dir / old_id), \
+        read_service(history_dir / new_id)
+    by_id = {r["id"]: r for r in index}
+
+    added = [e for k, e in new.items() if k not in old]
+    removed = [e for k, e in old.items() if k not in new]
+    changed = [(old[k], e) for k, e in new.items()
+               if k in old and old[k]["service"] != e["service"]]
+
+    def metres(rows, key=lambda r: r):
+        return sum(float(key(r)["length_m"]) for r in rows)
+
+    print(f"{old_id}  ->  {new_id}\n")
+    for label, rows, sign in (("added to the round", added, "+"),
+                              ("removed from the round", removed, "-")):
+        if rows:
+            print(f"{label}: {len(rows)} edge(s), {metres(rows):.0f} m")
+            for r in sorted(rows, key=lambda r: -float(r["length_m"]))[:8]:
+                print(f"   {sign} {r['name'][:30]:32s} "
+                      f"service={r['service']}  {float(r['length_m']):.0f} m")
+            if len(rows) > 8:
+                print(f"     ... and {len(rows) - 8} more")
+    if changed:
+        print(f"changed value: {len(changed)} edge(s)")
+        for a, b in sorted(changed,
+                           key=lambda p: -float(p[1]["length_m"]))[:8]:
+            print(f"   ~ {b['name'][:30]:32s} "
+                  f"{a['service']} -> {b['service']}  "
+                  f"{float(b['length_m']):.0f} m")
+        if len(changed) > 8:
+            print(f"     ... and {len(changed) - 8} more")
+    if not (added or removed or changed):
+        print("the round definition is identical")
+
+    a, b = by_id.get(old_id), by_id.get(new_id)
+    if a and b:
+        print("\n              before     after     change")
+        for label, key in (("mandatory", "mandatory_km"),
+                           ("total", "total_km"),
+                           ("deadhead", "deadhead_km"),
+                           ("bridging", "bridge_km")):
+            x, y = float(a[key] or 0), float(b[key] or 0)
+            print(f"  {label:10s} {x:8.2f}km{y:9.2f}km{y - x:+9.2f}km")
+        print(f"  {'islands':10s} {a['islands']:>8}  {b['islands']:>9}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--history", default=DEFAULT_HISTORY,
+                    help=f"history directory (default {DEFAULT_HISTORY})")
+    sub = ap.add_subparsers(dest="cmd")
+    sub.add_parser("list", help="all recorded versions, newest last")
+    show = sub.add_parser("show", help="one version in full")
+    show.add_argument("version", nargs="?")
+    diff = sub.add_parser("diff", help="what changed between two versions")
+    diff.add_argument("old", nargs="?")
+    diff.add_argument("new", nargs="?")
+    args = ap.parse_args()
+
+    history_dir = Path(args.history)
+    if not history_dir.exists():
+        sys.exit(f"{history_dir} does not exist -- solve with --history "
+                 f"first")
+    {"list": cmd_list, "show": cmd_show,
+     "diff": cmd_diff}.get(args.cmd, cmd_list)(history_dir, args)
+
+
+if __name__ == "__main__":
+    main()

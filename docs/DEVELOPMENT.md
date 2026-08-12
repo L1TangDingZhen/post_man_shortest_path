@@ -17,6 +17,8 @@ project evolves — especially the decision log.
 | SPEC-1 edge-split utility (`split_edge.py`, mid-block boundaries) | **done, tested** (`test_split.py`) — **V1 complete** |
 | V2 / SPEC-2: fixed endpoints (`--start` + `--end`, depot → round → handover office) | **done, tested** (in `test_solve.py`) |
 | B1: reproducible rounds (`prepare_round.py` export/apply) | **done, tested** (`test_prepare.py`) — **V2 complete** |
+| V2.2 graphical endpoints + in-browser solving | **done, tested** |
+| B9: solved-version history (`round_history.py`) | **done, tested** (`test_history.py`) |
 | V3+: time-based costs, pass pairing, GPX compare, editor UI | backlog |
 
 ---
@@ -358,6 +360,12 @@ stands, honestly). Option B was not needed.
   bridging kilometres reported in the warning are material — merging
   stray islands in the editor is nearly always the bigger, cheaper
   win. Would add the project's first heavy dependency.
+- **B9 Solved-version history.** *Shipped 2026-08.* `--history` files
+  each solve under `round.local/history/<id>/` (service.csv,
+  summary.json, route.csv, route_map.html) with an `index.csv` for
+  listing; `round_history.py list/show/diff` compares versions.
+  Deduplicates unchanged re-solves by hashing the annotation. Answers
+  "did that edit help?" with numbers instead of memory.
 - **B6 Per-letterbox sequencing.** Join route order with the G-NAF
   open address database to emit house-number ranges per pass —
   turning route.csv into a literal sort plan.
@@ -400,4 +408,5 @@ is the only networked step — keep it thin, and keep everything after
 | 2026-08 | Point picking on the maps: editor right-click copies `lat,lon` / `--start=` / `--end=`; the extraction preview gets folium's LatLngPopup | Coordinates are the CLI primitive (reproducible, scriptable), but hunting them in an external map was needless friction |
 | 2026-08 | Endpoints became data, not just arguments: right-click sets START/END into `data/endpoints.json`, the editor draws them, `solve_route.py` loads the file when `--start`/`--end` are absent, `prepare_round.py` carries it across re-extractions; a Solve button runs the solver server-side and serves the route map | Copy-pasting coordinates into a terminal was still the last manual step. Storing the pins makes the browser flow complete (edit → Save → Solve → view) while the CLI stays authoritative and scriptable |
 | 2026-08 | Editor: Leaflet `boxZoom` disabled; contextmenu `preventDefault`; added a "click sets" mode selector | Two real bugs found in use: shift+click (the x gesture) was eaten by box-zoom, since a 1 px wobble zooms to a box, and the right-click popup was hidden behind the browser's native menu. The mode selector removes the reliance on modifier keys altogether |
+| 2026-08 | Version history stores the *annotation* (edges with service 1/2/x, ~200 rows) rather than a copy of `edges.csv` (10 850 rows), keyed by a hash of it; unchanged re-solves are not filed | The annotation is the round definition and is two orders of magnitude smaller; hashing it makes "did anything actually change?" exact, so pressing Solve repeatedly cannot bury the real changes |
 | 2026-08 | Island warning rewritten: names service islands vs pinned endpoints separately, reports the bridging kilometres, points at the editor's island view | The old message called the endpoint pair a "service island" (wrong) and gave no sense of scale, so "near-optimal" read as "unquantified doubt" instead of "these 1.1 km are heuristic" |

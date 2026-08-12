@@ -70,6 +70,8 @@ from pathlib import Path
 
 import networkx as nx
 
+from round_history import DEFAULT_HISTORY
+
 try:
     from shapely import wkt as shapely_wkt
 except ImportError:  # geometry is optional; straight lines still work
@@ -156,6 +158,7 @@ def ensure_required_connected(F, R, pinned_endpoints=False):
     comps = list(nx.connected_components(R))
     bridges = 0
     bridge_len = 0.0
+    n_components = len(comps)
     while len(comps) > 1:
         base = comps[0]
         others = set().union(*comps[1:])
@@ -187,6 +190,7 @@ def ensure_required_connected(F, R, pinned_endpoints=False):
               f"caused by annotation gaps (a short service=0 sliver "
               f"inside a street you do deliver); never mark a street "
               f"you do not deliver just to merge islands.")
+    return bridges, bridge_len
 
 
 # ----------------------------------------------------------------------
@@ -647,6 +651,16 @@ def main():
                          "end is pinned, start chosen optimally. "
                          "Mutually exclusive with --open. Equals form "
                          "for southern latitudes: --end=-37.84,144.95")
+    ap.add_argument("--history", nargs="?", const=DEFAULT_HISTORY,
+                    metavar="DIR",
+                    help="file this solve away as a version (annotation "
+                         "+ route + totals) so later runs can be "
+                         "compared; bare --history uses "
+                         f"{DEFAULT_HISTORY}. Inspect with "
+                         "round_history.py list / diff")
+    ap.add_argument("--note", default="",
+                    help="label for the recorded version, e.g. "
+                         '--note "after fixing the sliver gaps"')
     ap.add_argument("--return-to-start", action="store_true",
                     help="after the pinned end, ride the shortest path "
                          "back to the start and include it in the "
@@ -703,7 +717,8 @@ def main():
         print(f"  end snapped to node {pin_end} at {nodes[pin_end]}")
         R.add_edge(pin_end, pin_start, key=VIRTUAL_KEY, length=0.0)
 
-    ensure_required_connected(F, R, pinned_endpoints=pin_start is not None)
+    bridges, bridge_len = ensure_required_connected(
+        F, R, pinned_endpoints=pin_start is not None)
 
     start_node = None
     if args.start and pin_start is None:
@@ -758,6 +773,35 @@ def main():
     deadhead = total - service_len
     route_csv = write_route_csv(segments, F, nodes, out_dir)
     route_map = write_map(segments, nodes, out_dir)
+
+    if args.history:
+        import round_history
+        version, is_new = round_history.record(
+            Path(args.history), data_dir, out_dir=out_dir,
+            note=args.note,
+            summary={
+                "mode": kind,
+                "service_edges": sum(1 for e in edges if e["service"] > 0),
+                "mandatory_km": round(service_len / 1000, 3),
+                "total_km": round(total / 1000, 3),
+                "deadhead_km": round(deadhead / 1000, 3),
+                "islands": (bridges + 1 - (1 if pin_start is not None
+                                           else 0)) if bridges else 1,
+                "bridges": bridges,
+                "bridge_km": round(bridge_len / 1000, 3),
+                "segments_service": sum(1 for s in segments
+                                        if s["kind"] == "service"),
+                "segments_deadhead": sum(1 for s in segments
+                                         if s["kind"] == "deadhead"),
+                "start": args.start or "",
+                "end": args.end or "",
+                "return_to_start": bool(args.return_to_start),
+                "edges_total": len(edges),
+            })
+        print("  history: " + (f"recorded version {version}" if is_new
+                               else f"unchanged since version {version}")
+              + f" (in {args.history})")
+
     print(f"""
 ================ RESULT ({kind}) ================
 Mandatory service riding : {service_len / 1000:7.2f} km   (theoretical lower bound)

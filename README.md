@@ -189,6 +189,34 @@ Edges that are new to the enlarged area keep the extraction default
 and are reported — review them in the editor. Stale overrides (ids
 that no longer exist) are warned about, never silently dropped.
 
+## Version history — did that edit actually help?
+
+Add `--history` to any solve and the run is filed away: the round
+definition at that moment, the route it produced, and the totals.
+
+```bash
+python solve_route.py --data data --out result --history \
+    --note "after fixing the sliver gaps"
+
+python round_history.py list          # every version, newest last
+python round_history.py diff          # what changed between the last two
+python round_history.py diff 2026 -1  # by id prefix or negative index
+python round_history.py show -1       # one version in full
+```
+
+`list` shows service / total / deadhead km and the island count per
+version, with the change in total distance since the previous one.
+`diff` names the streets added to or dropped from the round and the
+resulting distance deltas — so "I marked 19 slivers, did the route get
+shorter?" has an answer instead of a feeling.
+
+Versions live in `round.local/history/<id>/` (gitignored), each with
+`service.csv`, `summary.json`, `route.csv` and a copy of
+`route_map.html` you can still open months later. Re-solving an
+unchanged round does not create a duplicate. The editor's **Solve
+route** button records versions automatically and lists the recent
+ones under the button.
+
 ## Reading the result
 
 The console summary separates what optimisation can and cannot change:
@@ -220,6 +248,7 @@ python test_solve.py
 python test_editor.py
 python test_split.py
 python test_prepare.py
+python test_history.py
 ```
 
 Runs the solver on a synthetic street grid (no internet needed) and

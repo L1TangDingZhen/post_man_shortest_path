@@ -57,6 +57,7 @@ from pathlib import Path
 
 BASE = Path(__file__).parent
 ENDPOINTS = "endpoints.json"
+DEFAULT_HISTORY = "round.local/history"
 
 
 def parse_wkt_linestring(wkt):
@@ -229,8 +230,11 @@ TEMPLATE = r"""<!DOCTYPE html>
     <button data-clear="end">clear</button><br>
     <label><input type="checkbox" id="eprts"> return to start after
       the end</label><br>
+    <input id="note" placeholder="label this version (optional)"
+           style="width:150px">
     <button id="solve">Solve route</button>
     <span id="solvemsg"></span>
+    <div id="history" style="margin-top:4px"></div>
     <pre id="solveout" style="display:none;max-height:170px;overflow:auto;
       background:#f4f4f4;padding:6px;white-space:pre-wrap;
       font-size:11px"></pre>
@@ -536,6 +540,29 @@ document.getElementById("eprts").addEventListener("change", function () {
   saveEndpoints();
 });
 
+async function loadHistory() {
+  if (!SERVE) return;
+  let rows;
+  try {
+    rows = await (await fetch("/history")).json();
+  } catch (err) { return; }
+  const el = document.getElementById("history");
+  if (!rows.length) { el.innerHTML = ""; return; }
+  let prev = null;
+  el.innerHTML = "<b>versions</b> (newest last)<br>" +
+    rows.map(function (r) {
+      const t = parseFloat(r.total_km);
+      const d = prev === null ? "" :
+        ' <span style="color:' + (t <= prev ? "#2f855a" : "#9b2c2c") +
+        '">' + (t - prev >= 0 ? "+" : "") + (t - prev).toFixed(2) + "</span>";
+      prev = t;
+      return '<span style="font-family:monospace">' + r.id.slice(4) +
+        "</span> " + parseFloat(r.mandatory_km).toFixed(2) + "+" +
+        parseFloat(r.deadhead_km).toFixed(2) + " = <b>" + t.toFixed(2) +
+        " km</b>" + d + (r.note ? " &middot; " + esc(r.note) : "");
+    }).join("<br>");
+}
+
 document.getElementById("solve").onclick = async function () {
   if (!SERVE) {
     alert("Solving from the page needs the server: run\n" +
@@ -550,13 +577,15 @@ document.getElementById("solve").onclick = async function () {
   this.disabled = true;
   msg.textContent = " solving ...";
   try {
-    const resp = await fetch("/solve", {method: "POST"});
+    const resp = await fetch("/solve", {method: "POST",
+      body: document.getElementById("note").value});
     const text = await resp.text();
     out.style.display = "block";
     out.textContent = text;
     msg.innerHTML = resp.ok
       ? ' <a href="/route_map.html" target="_blank">open route map</a>'
       : " failed";
+    if (resp.ok) loadHistory();
   } catch (err) {
     msg.textContent = " failed: " + err;
   } finally {
@@ -697,6 +726,7 @@ window.addEventListener("beforeunload", function (ev) {
 });
 
 drawEndpoints();
+loadHistory();
 refresh();
 </script>
 </body>
@@ -761,11 +791,15 @@ def save_csv(data_dir: Path, text: str) -> str:
             f"2: {n['2']}, 1: {n['1']}, 0: {n['0']}, x: {n['x']}")
 
 
-def run_solver(data_dir: Path, out_dir: Path):
+def run_solver(data_dir: Path, out_dir: Path, history_dir: Path,
+               note: str = ""):
     """Run solve_route.py on the saved endpoints. Returns (ok, output)."""
     ep = load_endpoints(data_dir)
     cmd = [sys.executable, str(BASE / "solve_route.py"),
-           "--data", str(data_dir), "--out", str(out_dir)]
+           "--data", str(data_dir), "--out", str(out_dir),
+           "--history", str(history_dir)]
+    if note:
+        cmd += ["--note", note]
     if ep.get("start"):
         cmd.append("--start={},{}".format(*ep["start"]))
     if ep.get("end"):
@@ -776,7 +810,7 @@ def run_solver(data_dir: Path, out_dir: Path):
     return res.returncode == 0, (res.stdout + res.stderr).strip()
 
 
-def serve(data_dir: Path, port: int, out_dir: Path):
+def serve(data_dir: Path, port: int, out_dir: Path, history_dir: Path):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
@@ -795,6 +829,11 @@ def serve(data_dir: Path, port: int, out_dir: Path):
             if path in ("/", "/editor.html", "/index.html"):
                 html, _ = build_html(data_dir)
                 self._reply(200, html, "text/html; charset=utf-8")
+            elif path == "/history":
+                import round_history
+                rows = round_history.read_index(history_dir)
+                self._reply(200, json.dumps(rows[-8:]),
+                            "application/json; charset=utf-8")
             elif path == "/route_map.html":
                 target = out_dir / "route_map.html"
                 if not target.exists():
@@ -831,8 +870,11 @@ def serve(data_dir: Path, port: int, out_dir: Path):
                     self._reply(200, json.dumps(saved),
                                 "application/json; charset=utf-8")
             elif self.path == "/solve":
+                length = int(self.headers.get("Content-Length") or 0)
+                note = self.rfile.read(length).decode("utf-8").strip()
                 print("  solving ...", flush=True)
-                ok, output = run_solver(data_dir, out_dir)
+                ok, output = run_solver(data_dir, out_dir, history_dir,
+                                        note)
                 print(f"  solve {'ok' if ok else 'FAILED'}", flush=True)
                 self._reply(200 if ok else 400, output)
             else:
@@ -867,11 +909,15 @@ def main():
                     help="port for --serve (0 = pick a free one)")
     ap.add_argument("--out", default="result",
                     help="where --serve writes solver results")
+    ap.add_argument("--history", default=None, metavar="DIR",
+                    help="where --serve files solved versions "
+                         f"(default {DEFAULT_HISTORY})")
     args = ap.parse_args()
     data_dir = Path(args.data)
 
     if args.serve:
-        serve(data_dir, args.port, Path(args.out))
+        serve(data_dir, args.port, Path(args.out),
+              Path(args.history or DEFAULT_HISTORY))
         return
 
     html, edges = build_html(data_dir)

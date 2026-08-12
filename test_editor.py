@@ -167,7 +167,9 @@ def test_serve():
     proc = subprocess.Popen(
         [sys.executable, str(BASE / "make_editor.py"),
          "--data", str(data), "--serve", "--port", "0",
-         "--out", str(TMP / "serve_out")],
+         "--out", str(TMP / "serve_out"),
+         # never let a test write into the real round directory
+         "--history", str(TMP / "serve_hist")],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:
         port = None
