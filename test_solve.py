@@ -218,6 +218,16 @@ def main():
     end7, _ = check_walk(rows7, edges_by_id, spec, closed=False)
     assert end7 == "n23", f"route should end at n23, got {end7}"
 
+    print("== closed tour: --start + --end + --return-to-start ==")
+    out8 = TMP / "tour"
+    run(data, out8, "--start=-37.845,144.950", "--end=-37.8471,144.9529",
+        "--return-to-start")
+    rows8 = read_route(out8)
+    end8, first8 = check_walk(rows8, edges_by_id, spec, closed=True)
+    assert first8 == "n00", f"tour should start at n00, got {first8}"
+    assert total_km(rows8) >= total_km(rows6), \
+        "the tour includes a return leg, it cannot be shorter"
+
     print("== --end with --open rejected ==")
     res = subprocess.run(
         [sys.executable, str(BASE / "solve_route.py"),

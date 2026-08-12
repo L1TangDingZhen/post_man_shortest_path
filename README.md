@@ -81,6 +81,10 @@ Type a street name or a road type (`trunk`, `steps`, …) to bulk-set
 all matched segments at once. Live counters show edges per value, mandatory km
 and unsaved changes; undo works across bulk operations.
 
+**Right-click** anywhere on the map to copy the coordinates — plain
+`lat,lon` or as a ready-made `--start=`/`--end=` argument for
+`solve_route.py`.
+
 **show islands** colours each connected component of your service
 streets separately (with per-island zoom buttons) — one island means
 the solver's optimum is exact; stray extra islands are usually
@@ -130,6 +134,17 @@ python solve_route.py --data data --out result --start=-37.8406,144.9541
 # corridor streets. --end alone pins just the finish.
 python solve_route.py --data data --out result \
     --start=-37.8406,144.9541 --end=-37.8380,144.9520
+
+# Closed tour: same, plus the shortest ride from the end back to the
+# start (depot -> round -> handover office -> depot). The office visit
+# is last-before-home, so the return leg is a constant and joint
+# optimality is preserved.
+python solve_route.py --data data --out result \
+    --start=-37.8406,144.9541 --end=-37.8380,144.9520 --return-to-start
+
+# Tip: right-click in the editor (make_editor.py --serve) to copy any
+# point as a ready-made --start=/--end= argument; the extraction
+# preview shows coordinates on click too.
 
 # Use an exact hand-drawn boundary instead of place names:
 # draw a polygon at https://geojson.io, save it, then

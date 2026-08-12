@@ -145,6 +145,7 @@ def preview_map(G, rows, out_dir: Path):
     xs = [d["x"] for _, d in G.nodes(data=True)]
     m = folium.Map(location=[sum(ys) / len(ys), sum(xs) / len(xs)],
                    zoom_start=15, tiles="cartodbpositron")
+    folium.LatLngPopup().add_to(m)   # click anywhere -> shows lat/lon
     for r in rows:
         line = shapely_wkt.loads(r["geometry_wkt"])
         pts = [(y, x) for x, y in line.coords]

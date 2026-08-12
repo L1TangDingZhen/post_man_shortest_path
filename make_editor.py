@@ -16,6 +16,8 @@ them.  Open it in a browser:
       upscales past its native 20).
     * search by street name or road type ("trunk", "steps", ...),
       then bulk-set every matched edge at once
+    * right-click anywhere to copy the coordinates, plain or as a
+      ready-made --start= / --end= argument for solve_route.py
     * live counters: edges per service value, mandatory km, unsaved edits
     * Export downloads an updated edges.csv (all columns preserved, only
       `service` changed) -- replace data/edges.csv with it and re-run
@@ -170,7 +172,8 @@ TEMPLATE = r"""<!DOCTYPE html>
   <div id="hint">hover: the thickened edge is what a click will
     change &middot; click: cycle 2&rarr;1&rarr;0 &middot;
     ctrl-click: set 0 &middot; shift-click: toggle x
-    (banned &mdash; never routed through, not even as a shortcut)<br>
+    (banned &mdash; never routed through, not even as a shortcut)
+    &middot; right-click: copy coordinates for --start/--end<br>
     search matches street name and road type
     (e.g. "trunk", "steps")<br>
     <span id="posthint">after export, replace data/edges.csv with the
@@ -385,6 +388,23 @@ map.on("click", function (ev) {
   const i = nearestEdge(
     map.containerPointToLayerPoint(ev.containerPoint), SNAP_PX);
   if (i >= 0) clickEdge(i, ev.originalEvent);
+});
+
+// right-click anywhere: coordinates ready to paste into solve_route
+map.on("contextmenu", function (ev) {
+  const txt = ev.latlng.lat.toFixed(7) + "," + ev.latlng.lng.toFixed(7);
+  L.popup().setLatLng(ev.latlng).setContent(
+    "<b>" + txt + "</b><br>" +
+    '<button data-copy="' + txt + '">copy lat,lon</button> ' +
+    '<button data-copy="--start=' + txt + '">--start</button> ' +
+    '<button data-copy="--end=' + txt + '">--end</button>'
+  ).openOn(map);
+});
+document.addEventListener("click", function (ev) {
+  const b = ev.target.closest("button[data-copy]");
+  if (!b) return;
+  if (navigator.clipboard) navigator.clipboard.writeText(b.dataset.copy);
+  b.textContent = "copied!";
 });
 
 function apply(i, svc) {

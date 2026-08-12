@@ -262,6 +262,18 @@ def parity_repair(F, R, open_route, start_node):
 VIRTUAL_KEY = "virtual|endpin"
 
 
+def deadhead_segments(F, node_path):
+    """Expand a node path into deadhead segments, taking the cheapest
+    real edge between each pair of adjacent nodes."""
+    segs = []
+    for x, y in zip(node_path, node_path[1:]):
+        key, data = min(F[x][y].items(), key=lambda kv: kv[1]["length"])
+        segs.append(dict(kind="deadhead", edge_id=key, u=x, v=y,
+                         name=data["name"], length=data["length"],
+                         wkt=data["wkt"], pass_label="-"))
+    return segs
+
+
 def traverse(F, R, nodes, endpoints, start_node, pin_start=None):
     """Walk the Euler circuit/path and expand connectors into real
     street segments. Returns a list of segment dicts.
@@ -290,24 +302,13 @@ def traverse(F, R, nodes, endpoints, start_node, pin_start=None):
     segments = []
     passes_seen = defaultdict(int)
 
-    def real_edge_between(x, y):
-        """Cheapest real edge between adjacent nodes (for connector
-        expansion)."""
-        key, data = min(F[x][y].items(), key=lambda kv: kv[1]["length"])
-        return key, data
-
     for u, v, key in euler:
         data = R[u][v][key]
         if "nodepath" in data:                       # connector -> expand
             np_ = data["nodepath"]
             if np_[0] != u:
                 np_ = list(reversed(np_))
-            for x, y in zip(np_, np_[1:]):
-                ekey, edata = real_edge_between(x, y)
-                segments.append(dict(kind="deadhead", edge_id=ekey,
-                                     u=x, v=y, name=edata["name"],
-                                     length=edata["length"],
-                                     wkt=edata["wkt"], pass_label="-"))
+            segments.extend(deadhead_segments(F, np_))
         else:                                        # service pass
             base = data["base"]
             edata = F[u][v][base]
@@ -627,10 +628,18 @@ def main():
                          "end is pinned, start chosen optimally. "
                          "Mutually exclusive with --open. Equals form "
                          "for southern latitudes: --end=-37.84,144.95")
+    ap.add_argument("--return-to-start", action="store_true",
+                    help="after the pinned end, ride the shortest path "
+                         "back to the start and include it in the "
+                         "route -- a closed tour start -> service -> "
+                         "end -> start (e.g. depot -> round -> "
+                         "handover office -> depot). Requires --end.")
     args = ap.parse_args()
     if args.end and args.open:
         ap.error("--end is mutually exclusive with --open "
                  "(an --end route is already open)")
+    if args.return_to_start and not args.end:
+        ap.error("--return-to-start requires --end")
 
     data_dir, out_dir = Path(args.data), Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -691,6 +700,21 @@ def main():
         endpoints, extra = parity_repair(F, R, args.open, start_node)
         segments = traverse(F, R, nodes, endpoints, start_node)
         kind = "open path" if endpoints else "closed circuit"
+
+    if args.return_to_start:
+        last, first = segments[-1]["v"], segments[0]["u"]
+        if last != first:
+            try:
+                path = nx.shortest_path(F, last, first, weight="length")
+            except nx.NetworkXNoPath:
+                sys.exit("--return-to-start: no path from the end back "
+                         "to the start exists in the network.")
+            tail = deadhead_segments(F, path)
+            segments.extend(tail)
+            print(f"  return leg after the end: "
+                  f"{sum(s['length'] for s in tail) / 1000:.2f} km "
+                  f"back to the start")
+            kind += " + return to start"
 
     total = sum(s["length"] for s in segments)
     deadhead = total - service_len
