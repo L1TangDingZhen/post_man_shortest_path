@@ -15,6 +15,9 @@ asserts on the JSON payload embedded in the HTML:
   * --serve mode: GET rebuilds the page from disk, POST /save validates
     and writes back atomically (backup kept), bad payloads are rejected
     and leave the file untouched
+  * --serve endpoints + solve: POST /endpoints stores the picked
+    start/end (rejecting nonsense), the payload carries them back, and
+    POST /solve runs the solver on them and serves /route_map.html
 
 Run:  python test_editor.py
 """
@@ -163,7 +166,8 @@ def test_serve():
     write_case(data)
     proc = subprocess.Popen(
         [sys.executable, str(BASE / "make_editor.py"),
-         "--data", str(data), "--serve", "--port", "0"],
+         "--data", str(data), "--serve", "--port", "0",
+         "--out", str(TMP / "serve_out")],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:
         port = None
@@ -227,6 +231,53 @@ def test_serve():
             assert e.code == 400, e.code
         assert (data / "edges.csv").read_bytes() == before, \
             "rejected save must not modify the file"
+
+        print("== serve: endpoints + solve ==")
+        # no route yet
+        try:
+            urllib.request.urlopen(f"{base}/route_map.html", timeout=10)
+            raise AssertionError("route map must 404 before solving")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404, e.code
+
+        eps = {"start": [-37.845, 144.950], "end": [-37.8471, 144.9529],
+               "return_to_start": True}
+        req = urllib.request.Request(
+            f"{base}/endpoints", data=json.dumps(eps).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"})
+        saved = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        assert saved["start"] == eps["start"] and saved["end"] == eps["end"]
+        assert saved["return_to_start"] is True
+        assert json.loads((data / "endpoints.json").read_text(
+            encoding="utf-8"))["start"] == eps["start"]
+
+        # nonsense coordinates are rejected
+        req = urllib.request.Request(
+            f"{base}/endpoints",
+            data=json.dumps({"start": ["north", 3]}).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            raise AssertionError("bad endpoint must be rejected")
+        except urllib.error.HTTPError as e:
+            assert e.code == 400, e.code
+
+        # the served page carries the stored endpoints back
+        html3 = urllib.request.urlopen(f"{base}/", timeout=10).read()
+        payload3 = json.loads(re.search(
+            rb'<script id="edge-data" type="application/json">(.*?)'
+            rb"</script>", html3, re.DOTALL).group(1))
+        assert payload3["endpoints"]["end"] == eps["end"]
+
+        # solve on the stored endpoints, then serve the map
+        req = urllib.request.Request(f"{base}/solve", data=b"",
+                                     method="POST")
+        out = urllib.request.urlopen(req, timeout=120).read().decode()
+        assert "RESULT" in out and "return to start" in out, out
+        assert (TMP / "serve_out" / "route.csv").exists()
+        page = urllib.request.urlopen(f"{base}/route_map.html",
+                                      timeout=10).read()
+        assert b"route-data" in page, "route map not served"
     finally:
         proc.terminate()
         proc.wait(timeout=10)

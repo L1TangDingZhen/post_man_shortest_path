@@ -73,7 +73,9 @@ is drawn over a
 basemap, coloured by service (blue 2 / orange 1 / grey dashed 0).
 Click to cycle 2 → 1 → 0 (ctrl-click sets 0 directly — the common
 "not my street" case; shift-click toggles `x` = banned, e.g. for
-steps). Picking always targets the edge nearest to
+steps). For long stretches of the same value, switch **click sets**
+from `cycle` to a fixed value and just paint. Picking always targets
+the edge nearest to
 the cursor — the hovered edge is thickened and captioned first, so
 you can see what a click will change, and zoom reaches building
 level: even metre-long slivers of split streets are selectable.
@@ -81,9 +83,13 @@ Type a street name or a road type (`trunk`, `steps`, …) to bulk-set
 all matched segments at once. Live counters show edges per value, mandatory km
 and unsaved changes; undo works across bulk operations.
 
-**Right-click** anywhere on the map to copy the coordinates — plain
-`lat,lon` or as a ready-made `--start=`/`--end=` argument for
-`solve_route.py`.
+**Right-click** anywhere on the map to set that point as the round's
+**START** or **END** (or just copy the coordinates). The endpoints are
+stored in `data/endpoints.json`, drawn as markers, and reused on every
+reload; tick *return to start* for a closed tour. Then press
+**Solve route** — the solver runs and the finished route map opens in
+a new tab. The whole loop stays in the browser; `solve_route.py` picks
+the same endpoints up automatically when run without `--start`/`--end`.
 
 **show islands** colours each connected component of your service
 streets separately (with per-island zoom buttons) — one island means
@@ -195,9 +201,14 @@ Extra / deadhead         :    1.45 km   (7.3% of route)
 
 The mandatory part is the job itself — every service street times its
 multiplicity. The **extra** is the only optimisable quantity, and the
-algorithm guarantees it is minimal (exactly optimal whenever the service
-streets form one connected piece; see the algorithm notes in
-`docs/DEVELOPMENT.md`).
+algorithm guarantees it is minimal **when the service streets form one
+connected piece**. If they do not, the solver bridges the islands with
+a minimum spanning tree, warns, and reports how many kilometres that
+bridging accounts for — that figure is the only part of the answer
+that is not provably minimal. Use the editor's *show islands* view to
+merge stray islands and get back to an exact result; see
+`docs/DEVELOPMENT.md` (E3) for why optimal island connection is a
+harder problem.
 
 `route.csv` doubles as the basis for a new **sort sequence**: mail is
 bundled in row order; a `2/2` pass is the same street's other side.

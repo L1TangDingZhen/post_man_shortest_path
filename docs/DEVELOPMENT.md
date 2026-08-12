@@ -125,10 +125,24 @@ Migration notes:
   within the snap threshold of an intersection, no split is performed
   (the intersection-cutoff case).
 - **E3 Disconnected service islands.** If service streets form several
-  components (e.g. a detached pocket), the solver auto-bridges greedily
-  via shortest full-network paths, warns, and drops the exactness
-  claim. A provably optimal island connector (Steiner-like) is
-  deliberately out of scope.
+  components (e.g. a detached pocket), the solver bridges them and
+  drops the exactness claim, warning with the island count and the
+  bridging kilometres — the only part of the answer that is not
+  provably minimal. The bridging grows one component by always
+  attaching the nearest other one, i.e. **Prim's algorithm**, so it is
+  an optimal *minimum spanning tree* over component-to-component
+  shortest paths (verified on real data: identical to an independently
+  computed MST). It is still not the RPP optimum: a Steiner-style
+  branch off an existing bridge can be cheaper, and the parity
+  matching sometimes supplies connectivity for free. Closing that last
+  gap needs a different algorithm class (ILP with connectivity
+  constraints, branch-and-cut) — deliberately out of scope; see B8.
+  **In practice most islands are annotation gaps, not geography**: on
+  the maintainer's round the "islands" sat 12 m, 26 m and 114 m apart,
+  i.e. one missing footway sliver each. Check with the editor's island
+  view before blaming the algorithm. Note that pinned `--start`/`--end`
+  outside the service area always form one extra component, so the
+  warning is expected in that mode; the message names it separately.
 - **E4 Dead ends and courts.** A cul-de-sac edge with `service=2`
   naturally means ride in along one side, out along the other. Loop
   bulbs may appear as self-loop edges; the Euler machinery handles
@@ -336,6 +350,14 @@ stands, honestly). Option B was not needed.
   Editor: shift-click toggles x, bulk-x button, red dashed styling;
   loaders in solver + editor accept `x`/`X`; steps guidance updated
   (E6). Deleting the row remains the nuclear option.
+- **B8 Provably optimal island connection (research).** Replace the
+  MST bridging with an exact RPP formulation: ILP over edge
+  multiplicities with degree-parity and connectivity (subtour
+  elimination) constraints, solved by branch-and-cut with a MILP
+  backend (HiGHS/CBC via PuLP or OR-Tools). Only worth it if the
+  bridging kilometres reported in the warning are material — merging
+  stray islands in the editor is nearly always the bigger, cheaper
+  win. Would add the project's first heavy dependency.
 - **B6 Per-letterbox sequencing.** Join route order with the G-NAF
   open address database to emit house-number ranges per pass —
   turning route.csv into a literal sort plan.
@@ -376,3 +398,6 @@ is the only networked step — keep it thin, and keep everything after
 | 2026-08 | SPEC-2 shipped: `--start`+`--end` via the zero-length virtual required edge; `--end` alone via the pinned open path; endpoints snapped to F; depot/office outside the old area handled by Option A (enlarge polygon + `--default-service 0` + B1 replay), Option B dropped | The virtual-edge reduction reuses the entire pipeline and keeps exactness when endpoints touch the service component; off-component endpoints ride the existing auto-bridge with its honest warning. B1 removed Option A's blocker, so the strictly better variant won |
 | 2026-08 | `--return-to-start` (requires `--end`): closed tour start → service → end → start = the SPEC-2 open route plus a shortest-path tail appended as deadhead | The real round is "depot → deliver → handover office → depot": the office is the last stop before home, so the tail is a constant independent of the covering walk — appending it preserves joint optimality with zero new machinery |
 | 2026-08 | Point picking on the maps: editor right-click copies `lat,lon` / `--start=` / `--end=`; the extraction preview gets folium's LatLngPopup | Coordinates are the CLI primitive (reproducible, scriptable), but hunting them in an external map was needless friction |
+| 2026-08 | Endpoints became data, not just arguments: right-click sets START/END into `data/endpoints.json`, the editor draws them, `solve_route.py` loads the file when `--start`/`--end` are absent, `prepare_round.py` carries it across re-extractions; a Solve button runs the solver server-side and serves the route map | Copy-pasting coordinates into a terminal was still the last manual step. Storing the pins makes the browser flow complete (edit → Save → Solve → view) while the CLI stays authoritative and scriptable |
+| 2026-08 | Editor: Leaflet `boxZoom` disabled; contextmenu `preventDefault`; added a "click sets" mode selector | Two real bugs found in use: shift+click (the x gesture) was eaten by box-zoom, since a 1 px wobble zooms to a box, and the right-click popup was hidden behind the browser's native menu. The mode selector removes the reliance on modifier keys altogether |
+| 2026-08 | Island warning rewritten: names service islands vs pinned endpoints separately, reports the bridging kilometres, points at the editor's island view | The old message called the endpoint pair a "service island" (wrong) and gave no sense of scale, so "near-optimal" read as "unquantified doubt" instead of "these 1.1 km are heuristic" |

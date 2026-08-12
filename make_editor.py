@@ -16,8 +16,10 @@ them.  Open it in a browser:
       upscales past its native 20).
     * search by street name or road type ("trunk", "steps", ...),
       then bulk-set every matched edge at once
-    * right-click anywhere to copy the coordinates, plain or as a
-      ready-made --start= / --end= argument for solve_route.py
+    * right-click anywhere to set that point as the round's START or
+      END, or just copy the coordinates
+    * with --serve: Solve runs the solver on the saved endpoints and
+      shows the route map without touching the command line
     * live counters: edges per service value, mandatory km, unsaved edits
     * Export downloads an updated edges.csv (all columns preserved, only
       `service` changed) -- replace data/edges.csv with it and re-run
@@ -49,8 +51,12 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
+
+BASE = Path(__file__).parent
+ENDPOINTS = "endpoints.json"
 
 
 def parse_wkt_linestring(wkt):
@@ -112,6 +118,41 @@ def load(data_dir: Path):
     return header, edges
 
 
+def load_endpoints(data_dir: Path):
+    """Round endpoints picked in the editor: {"start": [lat, lon],
+    "end": [...], "return_to_start": bool}.  Missing file -> {}."""
+    path = data_dir / ENDPOINTS
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_endpoints(data_dir: Path, data):
+    """Validate and store the endpoints picked in the editor."""
+    if not isinstance(data, dict):
+        raise ValueError("endpoints must be an object")
+    out = {}
+    for key in ("start", "end"):
+        val = data.get(key)
+        if val is None:
+            continue
+        try:
+            lat, lon = float(val[0]), float(val[1])
+        except (TypeError, ValueError, IndexError):
+            raise ValueError(f"{key}: expected [lat, lon]")
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError(f"{key}: {lat},{lon} is not a coordinate")
+        out[key] = [lat, lon]
+    out["return_to_start"] = bool(data.get("return_to_start"))
+    (data_dir / ENDPOINTS).write_text(
+        json.dumps(out, indent=1), encoding="utf-8")
+    return out
+
+
 TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -152,6 +193,16 @@ TEMPLATE = r"""<!DOCTYPE html>
     <span class="swatch" style="background:#b91c1c"></span>x banned
   </div>
   <div class="row">
+    click sets
+    <select id="paint">
+      <option value="cycle">cycle 2&rarr;1&rarr;0</option>
+      <option value="2">2 &mdash; both sides</option>
+      <option value="1">1 &mdash; one side</option>
+      <option value="0">0 &mdash; not mine</option>
+      <option value="x">x &mdash; never use</option>
+    </select>
+  </div>
+  <div class="row">
     search <input id="search" placeholder="name / road type">
     <span id="nmatch"></span><br>
     set matched to
@@ -169,11 +220,26 @@ TEMPLATE = r"""<!DOCTYPE html>
     <button id="islands">show islands</button>
     <div id="islelist" style="max-height:150px;overflow:auto"></div>
   </div>
+  <div class="row" id="epbox">
+    <b>route endpoints</b> <span style="color:#666">(right-click the
+    map to set)</span><br>
+    <span id="epstart">start: not set</span>
+    <button data-clear="start">clear</button><br>
+    <span id="epend">end: not set</span>
+    <button data-clear="end">clear</button><br>
+    <label><input type="checkbox" id="eprts"> return to start after
+      the end</label><br>
+    <button id="solve">Solve route</button>
+    <span id="solvemsg"></span>
+    <pre id="solveout" style="display:none;max-height:170px;overflow:auto;
+      background:#f4f4f4;padding:6px;white-space:pre-wrap;
+      font-size:11px"></pre>
+  </div>
   <div id="hint">hover: the thickened edge is what a click will
     change &middot; click: cycle 2&rarr;1&rarr;0 &middot;
     ctrl-click: set 0 &middot; shift-click: toggle x
     (banned &mdash; never routed through, not even as a shortcut)
-    &middot; right-click: copy coordinates for --start/--end<br>
+    &middot; right-click: set the route's start/end<br>
     search matches street name and road type
     (e.g. "trunk", "steps")<br>
     <span id="posthint">after export, replace data/edges.csv with the
@@ -196,7 +262,10 @@ const DASH = {2: null, 1: null, 0: "4 6", x: "2 5"};
 const MATCH_COLOR = "#c026d3";
 
 const renderer = L.canvas();
-const map = L.map("map", {renderer: renderer, maxZoom: 22});
+// boxZoom off: it hijacks shift+click (a 1 px wobble zooms to a box),
+// which is exactly the gesture that toggles x.
+const map = L.map("map",
+  {renderer: renderer, maxZoom: 22, boxZoom: false});
 L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
   {maxZoom: 22, maxNativeZoom: 20,
    attribution: "&copy; OpenStreetMap contributors &copy; CARTO"}).addTo(map);
@@ -304,8 +373,11 @@ function tip(e) {
 
 function clickEdge(i, domEvent) {
   const e = edges[i];
+  const paint = document.getElementById("paint").value;
   let next;
-  if (domEvent.shiftKey) {
+  if (paint !== "cycle") {
+    next = paint === "x" ? "x" : +paint;      // painting a fixed value
+  } else if (domEvent.shiftKey) {
     next = e.service === "x" ? 0 : "x";       // toggle "never use"
   } else if (domEvent.ctrlKey || domEvent.metaKey) {
     next = 0;
@@ -390,22 +462,107 @@ map.on("click", function (ev) {
   if (i >= 0) clickEdge(i, ev.originalEvent);
 });
 
-// right-click anywhere: coordinates ready to paste into solve_route
+// right-click anywhere: set the round's start/end, or copy the point
 map.on("contextmenu", function (ev) {
-  const txt = ev.latlng.lat.toFixed(7) + "," + ev.latlng.lng.toFixed(7);
+  ev.originalEvent.preventDefault();   // else the browser menu covers us
+  const ll = [ev.latlng.lat, ev.latlng.lng];
+  const txt = ll[0].toFixed(7) + "," + ll[1].toFixed(7);
   L.popup().setLatLng(ev.latlng).setContent(
     "<b>" + txt + "</b><br>" +
+    '<button data-ep="start">set as START</button> ' +
+    '<button data-ep="end">set as END</button><br>' +
     '<button data-copy="' + txt + '">copy lat,lon</button> ' +
-    '<button data-copy="--start=' + txt + '">--start</button> ' +
-    '<button data-copy="--end=' + txt + '">--end</button>'
+    '<button data-copy="--start=' + txt + '">--start=</button> ' +
+    '<button data-copy="--end=' + txt + '">--end=</button>'
   ).openOn(map);
+  pending = ll;
 });
+
+let pending = null;
+let endpoints = payload.endpoints || {};
+const epMarkers = {};
+
+function drawEndpoints() {
+  ["start", "end"].forEach(function (k) {
+    if (epMarkers[k]) { map.removeLayer(epMarkers[k]); delete epMarkers[k]; }
+    const ll = endpoints[k];
+    document.getElementById("ep" + k).textContent = k + ": " +
+      (ll ? ll[0].toFixed(5) + ", " + ll[1].toFixed(5) : "not set");
+    if (!ll) return;
+    epMarkers[k] = L.circleMarker(ll, {
+      radius: 9, weight: 3, color: k === "start" ? "#2f855a" : "#9b2c2c",
+      fillColor: k === "start" ? "#48bb78" : "#f56565", fillOpacity: 1
+    }).addTo(map).bindTooltip(k.toUpperCase() + " of the round");
+  });
+  document.getElementById("eprts").checked = !!endpoints.return_to_start;
+}
+
+async function saveEndpoints() {
+  if (!SERVE) {
+    alert("Setting endpoints needs the server: run\n" +
+          "  make_editor.py --data data --serve");
+    return;
+  }
+  const resp = await fetch("/endpoints", {method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(endpoints)});
+  if (!resp.ok) { alert("could not save endpoints: " + await resp.text()); return; }
+  endpoints = await resp.json();
+  drawEndpoints();
+}
+
 document.addEventListener("click", function (ev) {
-  const b = ev.target.closest("button[data-copy]");
-  if (!b) return;
-  if (navigator.clipboard) navigator.clipboard.writeText(b.dataset.copy);
-  b.textContent = "copied!";
+  const copy = ev.target.closest("button[data-copy]");
+  if (copy) {
+    if (navigator.clipboard) navigator.clipboard.writeText(copy.dataset.copy);
+    copy.textContent = "copied!";
+    return;
+  }
+  const ep = ev.target.closest("button[data-ep]");
+  if (ep && pending) {
+    endpoints[ep.dataset.ep] = pending;
+    map.closePopup();
+    saveEndpoints();
+    return;
+  }
+  const clr = ev.target.closest("button[data-clear]");
+  if (clr) {
+    delete endpoints[clr.dataset.clear];
+    saveEndpoints();
+  }
 });
+document.getElementById("eprts").addEventListener("change", function () {
+  endpoints.return_to_start = this.checked;
+  saveEndpoints();
+});
+
+document.getElementById("solve").onclick = async function () {
+  if (!SERVE) {
+    alert("Solving from the page needs the server: run\n" +
+          "  make_editor.py --data data --serve");
+    return;
+  }
+  if (edges.some(e => e.service !== e.baseline)) {
+    if (!confirm("You have unsaved edits. Solve the SAVED version?")) return;
+  }
+  const msg = document.getElementById("solvemsg");
+  const out = document.getElementById("solveout");
+  this.disabled = true;
+  msg.textContent = " solving ...";
+  try {
+    const resp = await fetch("/solve", {method: "POST"});
+    const text = await resp.text();
+    out.style.display = "block";
+    out.textContent = text;
+    msg.innerHTML = resp.ok
+      ? ' <a href="/route_map.html" target="_blank">open route map</a>'
+      : " failed";
+  } catch (err) {
+    msg.textContent = " failed: " + err;
+  } finally {
+    this.disabled = false;
+  }
+};
 
 function apply(i, svc) {
   const e = edges[i];
@@ -539,6 +696,7 @@ window.addEventListener("beforeunload", function (ev) {
   if (edges.some(e => e.service !== e.baseline)) ev.preventDefault();
 });
 
+drawEndpoints();
 refresh();
 </script>
 </body>
@@ -549,7 +707,8 @@ refresh();
 def build_html(data_dir: Path):
     """Fresh HTML from the CSVs as they are on disk right now."""
     header, edges = load(data_dir)
-    payload = json.dumps({"header": header, "edges": edges},
+    payload = json.dumps({"header": header, "edges": edges,
+                          "endpoints": load_endpoints(data_dir)},
                          ensure_ascii=False).replace("</", "<\\/")
     return TEMPLATE.replace("__PAYLOAD__", payload), edges
 
@@ -602,43 +761,82 @@ def save_csv(data_dir: Path, text: str) -> str:
             f"2: {n['2']}, 1: {n['1']}, 0: {n['0']}, x: {n['x']}")
 
 
-def serve(data_dir: Path, port: int):
+def run_solver(data_dir: Path, out_dir: Path):
+    """Run solve_route.py on the saved endpoints. Returns (ok, output)."""
+    ep = load_endpoints(data_dir)
+    cmd = [sys.executable, str(BASE / "solve_route.py"),
+           "--data", str(data_dir), "--out", str(out_dir)]
+    if ep.get("start"):
+        cmd.append("--start={},{}".format(*ep["start"]))
+    if ep.get("end"):
+        cmd.append("--end={},{}".format(*ep["end"]))
+        if ep.get("return_to_start"):
+            cmd.append("--return-to-start")
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    return res.returncode == 0, (res.stdout + res.stderr).strip()
+
+
+def serve(data_dir: Path, port: int, out_dir: Path):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path.split("?")[0] not in ("/", "/editor.html",
-                                               "/index.html"):
-                self.send_error(404)
-                return
-            html, edges = build_html(data_dir)
-            body = html.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+        def _reply(self, code, body, ctype="text/plain; charset=utf-8"):
+            if isinstance(body, str):
+                body = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
-        def do_POST(self):
-            if self.path != "/save":
-                self.send_error(404)
-                return
-            length = int(self.headers.get("Content-Length") or 0)
-            text = self.rfile.read(length).decode("utf-8-sig")
-            try:
-                msg = save_csv(data_dir, text)
-            except ValueError as e:
-                body = str(e).encode("utf-8")
-                self.send_response(400)
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            if path in ("/", "/editor.html", "/index.html"):
+                html, _ = build_html(data_dir)
+                self._reply(200, html, "text/html; charset=utf-8")
+            elif path == "/route_map.html":
+                target = out_dir / "route_map.html"
+                if not target.exists():
+                    self._reply(404, "No route yet -- press Solve first.")
+                    return
+                self._reply(200, target.read_bytes(),
+                            "text/html; charset=utf-8")
             else:
-                body = msg.encode("utf-8")
-                self.send_response(200)
-                print(f"  {msg}", flush=True)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+                self.send_error(404)
+
+        def do_POST(self):
+            if self.path == "/save":
+                length = int(self.headers.get("Content-Length") or 0)
+                text = self.rfile.read(length).decode("utf-8-sig")
+                try:
+                    msg = save_csv(data_dir, text)
+                except ValueError as e:
+                    self._reply(400, str(e))
+                else:
+                    print(f"  {msg}", flush=True)
+                    self._reply(200, msg)
+            elif self.path == "/endpoints":
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length).decode("utf-8")
+                try:
+                    saved = save_endpoints(data_dir, json.loads(raw))
+                except ValueError as e:
+                    self._reply(400, str(e))
+                else:
+                    print(f"  endpoints saved: "
+                          f"start={saved.get('start')} "
+                          f"end={saved.get('end')} "
+                          f"return={saved['return_to_start']}", flush=True)
+                    self._reply(200, json.dumps(saved),
+                                "application/json; charset=utf-8")
+            elif self.path == "/solve":
+                print("  solving ...", flush=True)
+                ok, output = run_solver(data_dir, out_dir)
+                print(f"  solve {'ok' if ok else 'FAILED'}", flush=True)
+                self._reply(200 if ok else 400, output)
+            else:
+                self.send_error(404)
 
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     _, actual_port = httpd.server_address[:2]
@@ -650,6 +848,8 @@ def serve(data_dir: Path, port: int):
     print("Every page reload shows the file as it is on disk; "
           "Save writes straight back (backup: edges.csv.bak).",
           flush=True)
+    print("Right-click the map to set the route's start/end, then "
+          f"press Solve (results in {out_dir}/).", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -665,11 +865,13 @@ def main():
                          "save-back instead of writing a static file")
     ap.add_argument("--port", type=int, default=8765,
                     help="port for --serve (0 = pick a free one)")
+    ap.add_argument("--out", default="result",
+                    help="where --serve writes solver results")
     args = ap.parse_args()
     data_dir = Path(args.data)
 
     if args.serve:
-        serve(data_dir, args.port)
+        serve(data_dir, args.port, Path(args.out))
         return
 
     html, edges = build_html(data_dir)

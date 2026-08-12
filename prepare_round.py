@@ -11,6 +11,8 @@ gitignored round directory and replays them onto a fresh extraction:
     round.local/splits.csv              at_lat,at_lon,edge_id
         -- every split point, replayed via split_edge.py in order
            (parents before children, so nested splits compose)
+    round.local/endpoints.json          the round's start/end, as picked
+        -- in the editor; copied back to data/ on apply
 
 Workflow:
 
@@ -79,6 +81,12 @@ def export(data_dir: Path, round_dir: Path):
         for src, lat, lon in ordered:
             w.writerow([lat, lon, src])
 
+    ep_src = data_dir / "endpoints.json"
+    if ep_src.exists():
+        shutil.copy2(ep_src, round_dir / "endpoints.json")
+        print(f"Exported route endpoints    -> "
+              f"{round_dir / 'endpoints.json'}")
+
     print(f"Exported {len(rows)} service values -> {ov_path}")
     print(f"Exported {len(ordered)} split(s)      -> {sp_path}")
     print("Safe to re-extract now; apply with:  "
@@ -131,6 +139,12 @@ def apply(data_dir: Path, round_dir: Path):
         w = csv.DictWriter(f, fieldnames=header)
         w.writeheader()
         w.writerows(rows)
+
+    ep_stored = round_dir / "endpoints.json"
+    if ep_stored.exists():
+        shutil.copy2(ep_stored, data_dir / "endpoints.json")
+        print("Restored route endpoints -> "
+              f"{data_dir / 'endpoints.json'}")
 
     print(f"\nApplied {applied} service overrides"
           + (f", replayed {n_split} split(s)" if n_split else "")

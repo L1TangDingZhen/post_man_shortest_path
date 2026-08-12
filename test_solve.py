@@ -228,6 +228,20 @@ def main():
     assert total_km(rows8) >= total_km(rows6), \
         "the tour includes a return leg, it cannot be shorter"
 
+    print("== endpoints.json picked up automatically ==")
+    data4 = TMP / "data_ep"
+    write_case(data4)
+    (data4 / "endpoints.json").write_text(json.dumps({
+        "start": [-37.845, 144.950], "end": [-37.8471, 144.9529],
+        "return_to_start": True}), encoding="utf-8")
+    out9 = TMP / "auto"
+    stdout = run(data4, out9)                    # no --start/--end flags
+    assert "using endpoints from" in stdout, stdout
+    assert "return to start" in stdout, stdout
+    rows9 = read_route(out9)
+    end9, first9 = check_walk(rows9, edges_by_id, spec, closed=True)
+    assert first9 == "n00", f"auto start should be n00, got {first9}"
+
     print("== --end with --open rejected ==")
     res = subprocess.run(
         [sys.executable, str(BASE / "solve_route.py"),

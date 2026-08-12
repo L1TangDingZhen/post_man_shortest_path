@@ -142,12 +142,20 @@ def build_graphs(edges):
     return F, R
 
 
-def ensure_required_connected(F, R):
-    """If the service streets fall into several islands, bridge them with
+def ensure_required_connected(F, R, pinned_endpoints=False):
+    """If the required work falls into several islands, bridge them with
     the cheapest paths through the full network. Prints a warning, since
-    the result is then near-optimal rather than provably optimal."""
+    the result is then near-optimal rather than provably optimal.
+
+    Growing from one component and always attaching the nearest other
+    one is Prim's algorithm, so the bridges form a minimum spanning
+    tree over component-to-component shortest paths -- optimal among
+    tree-shaped connections, though not necessarily the RPP optimum
+    (a Steiner-style branch off a bridge, or connectivity gained for
+    free from the parity matching, can beat it)."""
     comps = list(nx.connected_components(R))
     bridges = 0
+    bridge_len = 0.0
     while len(comps) > 1:
         base = comps[0]
         others = set().union(*comps[1:])
@@ -163,11 +171,19 @@ def ensure_required_connected(F, R):
         R.add_edge(path[0], path[-1], key=f"bridge|{bridges}",
                    nodepath=path, length=d)
         bridges += 1
+        bridge_len += d
         comps = list(nx.connected_components(R))
     if bridges:
-        print(f"  warning: service streets formed {bridges + 1} separate "
-              f"islands; {bridges} bridge(s) added greedily. Route is "
-              f"near-optimal, not provably optimal.")
+        islands = bridges + 1 - (1 if pinned_endpoints else 0)
+        extra = " + the pinned start/end" if pinned_endpoints else ""
+        print(f"  warning: required work formed {bridges + 1} components "
+              f"({islands} service island(s){extra}); linked by "
+              f"{bridges} bridge(s) totalling {bridge_len / 1000:.2f} km."
+              f"\n           Bridging is a minimum spanning tree over the "
+              f"components, so the route is near-optimal: only that "
+              f"{bridge_len / 1000:.2f} km is not provably minimal. "
+              f"Merge the islands (editor: show islands) for an exact "
+              f"result.")
 
 
 # ----------------------------------------------------------------------
@@ -644,6 +660,25 @@ def main():
     data_dir, out_dir = Path(args.data), Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Endpoints picked in the editor (data/endpoints.json) are used when
+    # no --start/--end was given, so the browser flow needs no flags.
+    if not args.start and not args.end:
+        ep_file = data_dir / "endpoints.json"
+        if ep_file.exists():
+            try:
+                ep = json.loads(ep_file.read_text(encoding="utf-8"))
+            except ValueError:
+                ep = {}
+            if ep.get("start"):
+                args.start = "{},{}".format(*ep["start"])
+            if ep.get("end"):
+                args.end = "{},{}".format(*ep["end"])
+                args.return_to_start = (args.return_to_start or
+                                        bool(ep.get("return_to_start")))
+            if args.start or args.end:
+                print(f"  using endpoints from {ep_file} "
+                      f"(set in the editor)")
+
     print("Loading network ...")
     nodes, edges = load_data(data_dir)
     F, R = build_graphs(edges)
@@ -665,7 +700,7 @@ def main():
         print(f"  end snapped to node {pin_end} at {nodes[pin_end]}")
         R.add_edge(pin_end, pin_start, key=VIRTUAL_KEY, length=0.0)
 
-    ensure_required_connected(F, R)
+    ensure_required_connected(F, R, pinned_endpoints=pin_start is not None)
 
     start_node = None
     if args.start and pin_start is None:
